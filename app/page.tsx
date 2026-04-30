@@ -24,6 +24,7 @@ const SLOT_MINUTES = 30;
 export default function HomePage() {
   const [wechatName, setWechatName] = useState("");
   const [showNameModal, setShowNameModal] = useState(false);
+  const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -106,6 +107,8 @@ export default function HomePage() {
     localStorage.setItem(STORAGE_KEY, name);
     setWechatName(name);
     setShowNameModal(false);
+    if (editingName) alert("微信名已修改。已有预约记录仍保留原名称，不会自动改名。");
+    setEditingName(false);
   }
 
   function changeDate(dir: number) {
@@ -114,9 +117,18 @@ export default function HomePage() {
     setSelectedDate(formatDate(d));
   }
 
-  async function handleSlotClick(deviceId: string, slot: any) {
-    if (!slot.available) return;
-    router.push(`/booking?deviceId=${deviceId}&date=${selectedDate}&start=${slot.time}`);
+  function bookingUrl(deviceId: string, slot?: any) {
+    const params = new URLSearchParams({ deviceId, date: selectedDate });
+    if (slot?.available) params.set("start", slot.time);
+    return `/booking?${params.toString()}`;
+  }
+
+  function handleBookClick(deviceId: string) {
+    router.push(bookingUrl(deviceId));
+  }
+
+  function handleSlotClick(deviceId: string, slot: any) {
+    router.push(bookingUrl(deviceId, slot));
   }
 
   function handleTimelineClick(deviceId: string, slots: any[], event: MouseEvent<HTMLDivElement>) {
@@ -126,11 +138,10 @@ export default function HomePage() {
     handleSlotClick(deviceId, slots[index]);
   }
 
-  function handleLogout() {
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem("kitchen_admin");
-    setWechatName("");
-    setIsAdmin(false);
+  function handleEditName() {
+    setNameInput(wechatName);
+    setEditingName(true);
+    setMenuOpen(false);
     setShowNameModal(true);
   }
 
@@ -150,7 +161,12 @@ export default function HomePage() {
         <div className="bg-white rounded-2xl p-8 shadow-sm w-full max-w-sm">
           <div className="text-center mb-6">
             <div className="text-5xl mb-3">🍳</div>
-            <h1 className="text-2xl font-bold">创意厨房预约</h1>
+            <h1 className="text-2xl font-bold">{editingName ? "修改微信名" : "创意厨房预约"}</h1>
+            {editingName && (
+              <p className="mt-2 text-xs leading-relaxed text-[#8a8176]">
+                这里只修改本机当前使用的名称；已有预约记录仍保留原名称，不会自动改名。
+              </p>
+            )}
           </div>
           <input
             value={nameInput}
@@ -161,8 +177,16 @@ export default function HomePage() {
             autoFocus
           />
           <button onClick={saveName} disabled={!nameInput.trim()} className="w-full bg-[#c86b3c] text-white rounded-xl py-3 font-medium disabled:opacity-40">
-            确认
+            {editingName ? "保存修改" : "确认"}
           </button>
+          {editingName && (
+            <button
+              onClick={() => { setEditingName(false); setShowNameModal(false); setNameInput(""); }}
+              className="mt-2 w-full py-3 text-sm text-[#8a8176]"
+            >
+              取消
+            </button>
+          )}
         </div>
       </div>
     );
@@ -190,7 +214,7 @@ export default function HomePage() {
                 {isAdmin && (
                   <button onClick={() => router.push("/admin")} className="block min-h-11 w-full px-4 text-left text-sm text-[#c86b3c] active:bg-[#f7f4ef]">管理后台</button>
                 )}
-                <button onClick={handleLogout} className="block min-h-11 w-full border-t border-[#f0ebe5] px-4 text-left text-sm text-[#8a8176] active:bg-[#f7f4ef]">更换微信名</button>
+                <button onClick={handleEditName} className="block min-h-11 w-full border-t border-[#f0ebe5] px-4 text-left text-sm text-[#8a8176] active:bg-[#f7f4ef]">修改微信名</button>
               </div>
             </>
           )}
@@ -220,11 +244,19 @@ export default function HomePage() {
         <div key={dev.id} className="mb-4 bg-white rounded-2xl p-4 shadow-sm">
           <div className="flex items-center justify-between mb-2">
             <span className="font-semibold">{dev.name}</span>
-            {dev.status !== 1 && (
-              <span className="rounded-full bg-[#e2e0da] px-2 py-0.5 text-xs text-[#6b6860]">
-                维护中
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {dev.status !== 1 && (
+                <span className="rounded-full bg-[#e2e0da] px-2 py-0.5 text-xs text-[#6b6860]">
+                  维护中
+                </span>
+              )}
+              <button
+                onClick={() => handleBookClick(dev.id)}
+                className="min-h-8 rounded-full border border-[#e7cbbd] bg-white px-3 text-xs font-medium text-[#8a513b] active:scale-[0.98] active:bg-[#f7f4ef]"
+              >
+                预约 ›
+              </button>
+            </div>
           </div>
 
           <div className="mb-1 flex justify-end">
