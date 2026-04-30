@@ -27,12 +27,22 @@ export default function HomePage() {
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data }) => {
       if (!data?.user) { router.replace("/auth/login"); return; }
-      const supabase = createClient();
-      const { data: profile } = await supabase
+      const s2 = createClient();
+      let { data: profile } = await s2
         .from("kitchen_profiles")
         .select("*")
         .eq("id", data.user.id)
         .single();
+      if (!profile) {
+        await s2.from("kitchen_profiles").upsert({
+          id: data.user.id,
+          email: data.user.email || "",
+          nickname: data.user.email?.split("@")[0] || "用户",
+          role: 0,
+          ban_status: 0
+        });
+        profile = { id: data.user.id, email: data.user.email || "", nickname: data.user.email?.split("@")[0] || "用户", role: 0, ban_status: 0, ban_until: null, avatar: "", created_at: new Date().toISOString() } as Profile;
+      }
       setUser(profile);
       setLoading(false);
     });
