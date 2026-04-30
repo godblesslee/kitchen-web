@@ -53,7 +53,7 @@ export default function RulesPage() {
       <div className="bg-white rounded-2xl p-4 shadow-sm">
         {[
           "预约前请确认设备状态为可用",
-          "单次最长预约 2 小时，每天最多预约 2 次",
+          "单次最长预约 2 小时，每台设备每天最多预约 2 次",
           "预约后无法按时使用，请提前取消释放时段",
           "使用后请清洁设备和工作台面",
           "如有损坏请及时告知管理员"

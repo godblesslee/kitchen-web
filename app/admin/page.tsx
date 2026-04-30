@@ -4,6 +4,8 @@ import { supabase } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+function displayTime(t: string): string { return t.slice(0, 5); }
+
 export default function AdminPage() {
   const [tab, setTab] = useState("bookings");
   const [authorized, setAuthorized] = useState(false);
@@ -13,7 +15,14 @@ export default function AdminPage() {
   const [bookings, setBookings] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [devices, setDevices] = useState<any[]>([]);
-  const [config, setConfig] = useState({ max_duration: "2", max_daily: "2", booking_window: "7", slot_minutes: "30" });
+  const [config, setConfig] = useState({
+    max_duration: "2",
+    max_daily: "2",
+    booking_window: "7",
+    slot_minutes: "30",
+    start_hour: "6",
+    end_hour: "24",
+  });
   const [banModal, setBanModal] = useState({ show: false, name: "", type: 1, days: 3 });
 
   const router = useRouter();
@@ -80,6 +89,7 @@ export default function AdminPage() {
     if (data) {
       const c: any = {};
       data.forEach((r: any) => { c[r.key] = r.value; });
+      if (Number(c.end_hour) < 24) c.end_hour = "24";
       setConfig({ ...config, ...c });
     }
   }
@@ -189,7 +199,7 @@ export default function AdminPage() {
       {tab === "bookings" && bookings.map(b => (
         <div key={b.id} className="bg-white rounded-2xl p-4 mb-3 shadow-sm">
           <div><p className="font-medium">{b.deviceName}</p>
-          <p className="text-xs text-gray-500">@{b.wechat_name} | {b.date} {b.start_time}-{b.end_time} · {b.statusText}</p></div>
+          <p className="text-xs text-gray-500">@{b.wechat_name} | {b.date} {displayTime(b.start_time)}-{displayTime(b.end_time)} · {b.statusText}</p></div>
           {b.status === 1 && <button onClick={() => forceCancel(b.id)} className="mt-2 text-xs text-red-500 border border-red-200 rounded-lg px-3 py-1">强制取消</button>}
         </div>
       ))}
@@ -219,17 +229,21 @@ export default function AdminPage() {
       {tab === "config" && (
         <div className="bg-white rounded-2xl p-4 shadow-sm">
           {[
-            { key: "max_duration", label: "单次最大时长（小时）" },
-            { key: "max_daily", label: "单日最大预约次数" },
-            { key: "booking_window", label: "预约窗口（天）" },
-            { key: "slot_minutes", label: "时段粒度（分钟）" },
-          ].map(({ key, label }) => (
+            { key: "max_duration", label: "单次最大时长", options: [["0", "不限制"], ["0.5", "30分钟"], ["1", "1小时"], ["1.5", "1.5小时"], ["2", "2小时"], ["3", "3小时"]] },
+            { key: "max_daily", label: "单日最大预约次数", options: [["0", "不限制"], ["1", "1次"], ["2", "2次"], ["3", "3次"], ["4", "4次"]] },
+            { key: "booking_window", label: "预约窗口", options: [["0", "不限制"], ["7", "未来7天"], ["14", "未来14天"], ["30", "未来30天"]] },
+            { key: "slot_minutes", label: "时段粒度", options: [["15", "15分钟"], ["30", "30分钟"], ["60", "60分钟"]] },
+            { key: "start_hour", label: "开始营业时间", options: [["5", "05:00"], ["6", "06:00"], ["7", "07:00"], ["8", "08:00"], ["9", "09:00"]] },
+            { key: "end_hour", label: "最晚结束时间", options: [["22", "22:00"], ["23", "23:00"], ["24", "24:00"]] },
+          ].map(({ key, label, options }) => (
             <div key={key} className="mb-4">
               <label className="text-xs text-gray-500 block mb-1">{label}</label>
-              <input value={(config as any)[key]} onChange={e => setConfig({ ...config, [key]: e.target.value })} className="w-full border rounded-xl px-3 py-2 text-sm" />
+              <select value={(config as any)[key]} onChange={e => setConfig({ ...config, [key]: e.target.value })} className="w-full border rounded-xl px-3 py-2 text-sm bg-white">
+                {options.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
+              </select>
             </div>
           ))}
-          <button onClick={saveConfig} className="w-full bg-orange-500 text-white rounded-xl py-2.5 text-sm mt-2">保存配置</button>
+          <button onClick={saveConfig} className="w-full bg-[#c86b3c] text-white rounded-xl py-2.5 text-sm mt-2">保存配置</button>
         </div>
       )}
 

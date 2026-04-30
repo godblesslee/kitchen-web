@@ -1,6 +1,8 @@
 -- Kitchen Booking System Schema
 -- Run in Supabase SQL Editor
 
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
 -- Devices
 CREATE TABLE IF NOT EXISTS kitchen_devices (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -11,11 +13,11 @@ CREATE TABLE IF NOT EXISTS kitchen_devices (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Profiles (links to auth.users)
+-- Profiles are keyed by an app-generated UUID and identified by nickname.
 CREATE TABLE IF NOT EXISTS kitchen_profiles (
-  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email TEXT,
-  nickname TEXT,
+  nickname TEXT UNIQUE,
   avatar TEXT,
   role INTEGER DEFAULT 0,
   ban_status INTEGER DEFAULT 0,
@@ -27,10 +29,12 @@ CREATE TABLE IF NOT EXISTS kitchen_profiles (
 CREATE TABLE IF NOT EXISTS kitchen_bookings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   device_id UUID REFERENCES kitchen_devices(id) ON DELETE CASCADE,
-  user_id UUID REFERENCES kitchen_profiles(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES kitchen_profiles(id) ON DELETE SET NULL,
+  wechat_name TEXT NOT NULL,
   date DATE NOT NULL,
   start_time TIME NOT NULL,
   end_time TIME NOT NULL,
+  CONSTRAINT kitchen_bookings_valid_time CHECK (start_time < end_time),
   status INTEGER DEFAULT 1,
   canceled_by UUID,
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -55,14 +59,29 @@ CREATE TABLE IF NOT EXISTS kitchen_admin_logs (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Conflict prevention index
+-- Conflict prevention. The exclusion constraint catches overlapping active
+-- bookings, while the unique index keeps exact duplicate starts cheap to find.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_kitchen_no_conflict 
   ON kitchen_bookings(device_id, date, start_time) 
   WHERE status = 1;
 
+ALTER TABLE kitchen_bookings
+  ADD CONSTRAINT kitchen_bookings_no_active_overlap
+  EXCLUDE USING gist (
+    device_id WITH =,
+    date WITH =,
+    tsrange(
+      date + start_time,
+      date + end_time,
+      '[)'
+    ) WITH &&
+  )
+  WHERE (status = 1);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_kitchen_bookings_device_date ON kitchen_bookings(device_id, date, status);
 CREATE INDEX IF NOT EXISTS idx_kitchen_bookings_user ON kitchen_bookings(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kitchen_bookings_wechat ON kitchen_bookings(wechat_name, created_at DESC);
 
 -- RLS: Enable row level security
 ALTER TABLE kitchen_devices ENABLE ROW LEVEL SECURITY;
@@ -71,28 +90,39 @@ ALTER TABLE kitchen_bookings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kitchen_configs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE kitchen_admin_logs ENABLE ROW LEVEL SECURITY;
 
+-- Ban check used by the booking page and booking insert policy.
+CREATE OR REPLACE FUNCTION is_banned(p_wechat_name TEXT)
+RETURNS BOOLEAN AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1
+    FROM kitchen_profiles
+    WHERE nickname = p_wechat_name
+      AND ban_status > 0
+      AND (ban_until IS NULL OR ban_until > NOW())
+  );
+END;
+$$ LANGUAGE plpgsql STABLE;
+
 -- RLS Policies
--- devices: public read
+-- This app currently uses a shared anon client plus a local WeChat nickname,
+-- not Supabase Auth. These policies match that product model.
 CREATE POLICY "devices_read_all" ON kitchen_devices FOR SELECT USING (true);
-CREATE POLICY "devices_admin_all" ON kitchen_devices FOR ALL USING (
-  auth.uid() IN (SELECT id FROM kitchen_profiles WHERE role = 1)
-);
+CREATE POLICY "devices_public_update" ON kitchen_devices FOR UPDATE USING (true) WITH CHECK (true);
 
--- bookings: public read, insert own, update own or admin
+CREATE POLICY "profiles_read_all" ON kitchen_profiles FOR SELECT USING (true);
+CREATE POLICY "profiles_public_insert" ON kitchen_profiles FOR INSERT WITH CHECK (true);
+CREATE POLICY "profiles_public_update" ON kitchen_profiles FOR UPDATE USING (true) WITH CHECK (true);
+
 CREATE POLICY "bookings_read_all" ON kitchen_bookings FOR SELECT USING (true);
-CREATE POLICY "bookings_insert" ON kitchen_bookings FOR INSERT WITH CHECK (
-  auth.uid() = user_id AND 
-  auth.uid() NOT IN (SELECT id FROM kitchen_profiles WHERE ban_status > 0 AND (ban_until IS NULL OR ban_until > NOW()))
+CREATE POLICY "bookings_insert_unbanned" ON kitchen_bookings FOR INSERT WITH CHECK (
+  NOT is_banned(wechat_name)
 );
-CREATE POLICY "bookings_update_own" ON kitchen_bookings FOR UPDATE USING (
-  auth.uid() = user_id OR auth.uid() IN (SELECT id FROM kitchen_profiles WHERE role = 1)
-);
+CREATE POLICY "bookings_public_update" ON kitchen_bookings FOR UPDATE USING (true) WITH CHECK (true);
 
--- configs: admin only
 CREATE POLICY "configs_read_all" ON kitchen_configs FOR SELECT USING (true);
-CREATE POLICY "configs_admin" ON kitchen_configs FOR ALL USING (
-  auth.uid() IN (SELECT id FROM kitchen_profiles WHERE role = 1)
-);
+CREATE POLICY "configs_public_insert" ON kitchen_configs FOR INSERT WITH CHECK (true);
+CREATE POLICY "configs_public_update" ON kitchen_configs FOR UPDATE USING (true) WITH CHECK (true);
 
 -- Insert default configs
 INSERT INTO kitchen_configs (key, value) VALUES
@@ -101,7 +131,8 @@ INSERT INTO kitchen_configs (key, value) VALUES
   ('booking_window', '7'),
   ('slot_minutes', '30'),
   ('start_hour', '6'),
-  ('end_hour', '22')
+  ('end_hour', '24'),
+  ('admin_password', 'changeme')
 ON CONFLICT (key) DO NOTHING;
 
 -- Insert default devices
