@@ -1,109 +1,146 @@
 'use client';
 
-import { createClient } from "@/lib/supabase/client";
+import { supabase } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 export default function AdminPage() {
   const [tab, setTab] = useState("bookings");
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [authorized, setAuthorized] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+
   const [bookings, setBookings] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [devices, setDevices] = useState<any[]>([]);
   const [config, setConfig] = useState({ max_duration: "2", max_daily: "2", booking_window: "7", slot_minutes: "30" });
-  const [banModal, setBanModal] = useState({ show: false, id: "", name: "", type: 1, days: 3 });
+  const [banModal, setBanModal] = useState({ show: false, name: "", type: 1, days: 3 });
 
   const router = useRouter();
-  const supabase = createClient();
 
   useEffect(() => {
     checkAdmin();
   }, []);
 
   async function checkAdmin() {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { router.replace("/auth/login"); return; }
-    const { data: profile } = await supabase.from("kitchen_profiles").select("role").eq("id", user.id).single();
-    if (profile?.role === 1) {
-      setIsAdmin(true);
-      loadData("bookings");
-      loadData("users");
-      loadData("devices");
-    } else {
-      router.push("/");
+    const saved = localStorage.getItem("kitchen_admin");
+    if (saved === "true") {
+      setAuthorized(true);
+      loadAllData();
     }
   }
 
-  async function loadData(type: string) {
-    const supabase = createClient();
-    if (type === "bookings") {
-      const { data } = await supabase
-        .from("kitchen_bookings")
-        .select("*, kitchen_devices!inner(name), kitchen_profiles!inner(nickname)")
-        .order("created_at", { ascending: false })
-        .limit(100);
-      if (data) {
-        setBookings(data.map((b: any) => ({
-          ...b, deviceName: b.kitchen_devices?.name, nickname: b.kitchen_profiles?.nickname,
-          statusText: ({ 1: "预约中", 2: "已取消", 3: "管理员取消" } as Record<number, string>)[b.status] || "未知"
-        })));
-      }
-    }
-    if (type === "users") {
-      const { data } = await supabase.from("kitchen_profiles").select("*").order("created_at");
-      if (data) setUsers(data);
-    }
-    if (type === "devices") {
-      const { data } = await supabase.from("kitchen_devices").select("*").order("sort_order");
-      if (data) setDevices(data);
-    }
-    const { data: cfg } = await supabase.from("kitchen_configs").select("*");
-    if (cfg) {
+  async function loadAllData() {
+    loadBookings();
+    loadUsers();
+    loadDevices();
+    loadConfig();
+  }
+
+  async function loadBookings() {
+    const { data } = await supabase
+      .from("kitchen_bookings").select("*, kitchen_devices!inner(name)")
+      .order("created_at", { ascending: false }).limit(100);
+    if (data) setBookings(data.map((b: any) => ({
+      ...b, deviceName: b.kitchen_devices?.name,
+      statusText: ({ 1: "预约中", 2: "已取消", 3: "管理员取消" } as Record<number, string>)[b.status] || "未知"
+    })));
+  }
+
+  async function loadUsers() {
+    const { data } = await supabase.from("kitchen_profiles").select("*").order("created_at");
+    // Also get unique wechat names from bookings
+    const { data: bkNames } = await supabase.from("kitchen_bookings").select("wechat_name");
+    const nameSet = new Set<string>();
+    (bkNames || []).forEach((b: any) => { if (b.wechat_name) nameSet.add(b.wechat_name); });
+    // Merge with profiles
+    const profileNames = new Set((data || []).map((p: any) => p.nickname));
+    nameSet.forEach(n => profileNames.add(n));
+
+    const allUsers = Array.from(profileNames).map(name => {
+      const profile = (data || []).find((p: any) => p.nickname === name);
+      return {
+        nickname: name,
+        ban_status: profile?.ban_status || 0,
+        ban_until: profile?.ban_until || null,
+        role: profile?.role || 0,
+        id: profile?.id || name
+      };
+    });
+    setUsers(allUsers);
+  }
+
+  async function loadDevices() {
+    const { data } = await supabase.from("kitchen_devices").select("*").order("sort_order");
+    if (data) setDevices(data);
+  }
+
+  async function loadConfig() {
+    const { data } = await supabase.from("kitchen_configs").select("*");
+    if (data) {
       const c: any = {};
-      cfg.forEach((r: any) => { c[r.key] = r.value; });
+      data.forEach((r: any) => { c[r.key] = r.value; });
       setConfig({ ...config, ...c });
+    }
+  }
+
+  async function handleLogin() {
+    setPasswordError("");
+    const { data } = await supabase.from("kitchen_configs").select("value").eq("key", "admin_password").single();
+    if (data?.value === passwordInput) {
+      localStorage.setItem("kitchen_admin", "true");
+      setAuthorized(true);
+      loadAllData();
+    } else {
+      setPasswordError("密码错误");
     }
   }
 
   async function forceCancel(id: string) {
     if (!confirm("确定强制取消此预约？")) return;
     await supabase.from("kitchen_bookings").update({ status: 3, updated_at: new Date().toISOString() }).eq("id", id);
-    loadData("bookings");
+    loadBookings();
   }
 
   async function banUser() {
-    const { data: { user } } = await supabase.auth.getUser();
+    const existing = await supabase.from("kitchen_profiles").select("*").eq("nickname", banModal.name).single();
     const update: any = { ban_status: banModal.type };
     if (banModal.type === 1) {
       const until = new Date();
       until.setDate(until.getDate() + banModal.days);
       update.ban_until = until.toISOString();
+    } else {
+      update.ban_until = null;
     }
-    await supabase.from("kitchen_profiles").update(update).eq("id", banModal.id);
-    await supabase.rpc("log_admin_action", { p_admin_id: user?.id, p_action: "ban_user", p_target_id: banModal.id, p_detail: JSON.stringify(banModal) });
-    setBanModal({ show: false, id: "", name: "", type: 1, days: 3 });
-    loadData("users");
+    if (existing.data) {
+      await supabase.from("kitchen_profiles").update(update).eq("nickname", banModal.name);
+    } else {
+      await supabase.from("kitchen_profiles").insert({ id: crypto.randomUUID(), nickname: banModal.name, ...update, role: 0 });
+    }
+    setBanModal({ show: false, name: "", type: 1, days: 3 });
+    loadUsers();
   }
 
-  async function unbanUser(id: string) {
-    await supabase.from("kitchen_profiles").update({ ban_status: 0, ban_until: null }).eq("id", id);
-    loadData("users");
+  async function unbanUser(name: string) {
+    await supabase.from("kitchen_profiles").update({ ban_status: 0, ban_until: null }).eq("nickname", name);
+    loadUsers();
   }
 
   async function toggleMaintenance(devId: string, currentStatus: number) {
     const newStatus = currentStatus === 1 ? 0 : 1;
-    if (newStatus === 0 && !confirm("标记为维护中？同时取消该设备所有未来预约？")) return;
+    if (newStatus === 0 && !confirm("标记为维护中？将同时取消该设备所有未来预约？")) return;
     await supabase.from("kitchen_devices").update({ status: newStatus }).eq("id", devId);
     if (newStatus === 0) {
-      await supabase.from("kitchen_bookings").update({ status: 3, updated_at: new Date().toISOString() }).eq("device_id", devId).gte("date", new Date().toISOString().split("T")[0]).eq("status", 1);
+      await supabase.from("kitchen_bookings").update({ status: 3, updated_at: new Date().toISOString() })
+        .eq("device_id", devId).gte("date", new Date().toISOString().split("T")[0]).eq("status", 1);
     }
-    loadData("devices");
+    loadDevices();
   }
 
   async function saveConfig() {
     for (const [key, value] of Object.entries(config)) {
-      const { data: existing } = await supabase.from("kitchen_configs").select("id").eq("key", key).single();
-      if (existing) {
+      const { data: ex } = await supabase.from("kitchen_configs").select("key").eq("key", key).single();
+      if (ex) {
         await supabase.from("kitchen_configs").update({ value, updated_at: new Date().toISOString() }).eq("key", key);
       } else {
         await supabase.from("kitchen_configs").insert({ key, value });
@@ -112,57 +149,67 @@ export default function AdminPage() {
     alert("配置已保存");
   }
 
-  if (!isAdmin) return <div className="flex min-h-screen items-center justify-center text-gray-400">加载中...</div>;
+  if (!authorized) {
+    return (
+      <div className="flex min-h-screen items-center justify-center p-8 bg-amber-50">
+        <div className="bg-white rounded-2xl p-8 shadow-sm w-full max-w-sm">
+          <h2 className="text-lg font-bold mb-4">管理员登录</h2>
+          <input
+            type="password"
+            value={passwordInput}
+            onChange={e => setPasswordInput(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && handleLogin()}
+            placeholder="输入管理密码"
+            className="w-full border rounded-xl px-4 py-3 text-sm mb-3"
+            autoFocus
+          />
+          {passwordError && <p className="text-red-500 text-xs mb-3">{passwordError}</p>}
+          <button onClick={handleLogin} className="w-full bg-orange-500 text-white rounded-xl py-3 font-medium">确认</button>
+          <button onClick={() => router.push("/")} className="w-full text-gray-400 text-sm py-3">← 返回首页</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-lg mx-auto p-4 pb-24">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-bold">管理后台</h1>
-        <button onClick={() => router.push("/")} className="text-sm text-gray-500">← 首页</button>
+        <button onClick={() => { localStorage.removeItem("kitchen_admin"); setAuthorized(false); }} className="text-sm text-gray-400">退出</button>
       </div>
 
       <div className="flex border-b mb-4">
-        {["bookings", "users", "devices", "config"].map((t) => (
+        {["bookings", "users", "devices", "config"].map(t => (
           <button key={t} onClick={() => setTab(t)} className={`flex-1 pb-2 text-sm text-center ${tab === t ? "text-orange-500 border-b-2 border-orange-500 font-medium" : "text-gray-500"}`}>
             {{ bookings: "预约", users: "用户", devices: "设备", config: "配置" }[t]}
           </button>
         ))}
       </div>
 
-      {tab === "bookings" && bookings.map((b) => (
+      {tab === "bookings" && bookings.map(b => (
         <div key={b.id} className="bg-white rounded-2xl p-4 mb-3 shadow-sm">
-          <div className="flex justify-between items-start">
-            <div>
-              <p className="font-medium">{b.deviceName}</p>
-              <p className="text-xs text-gray-500">{b.nickname} | {b.date} {b.start_time}-{b.end_time}</p>
-            </div>
-            <span className="text-xs text-gray-400">{b.statusText}</span>
-          </div>
+          <div><p className="font-medium">{b.deviceName}</p>
+          <p className="text-xs text-gray-500">@{b.wechat_name} | {b.date} {b.start_time}-{b.end_time} · {b.statusText}</p></div>
           {b.status === 1 && <button onClick={() => forceCancel(b.id)} className="mt-2 text-xs text-red-500 border border-red-200 rounded-lg px-3 py-1">强制取消</button>}
         </div>
       ))}
 
-      {tab === "users" && users.map((u) => (
-        <div key={u.id} className="bg-white rounded-2xl p-4 mb-3 shadow-sm flex items-center gap-3">
+      {tab === "users" && users.map((u, i) => (
+        <div key={i} className="bg-white rounded-2xl p-4 mb-3 shadow-sm flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center text-sm">{u.nickname?.[0] || "?"}</div>
-          <div className="flex-1">
-            <p className="font-medium text-sm">{u.nickname || "未知"}</p>
-            {u.ban_status > 0 && <p className="text-xs text-red-500">{u.ban_status === 1 ? `封禁至 ${u.ban_until?.split("T")[0]}` : "永久封禁"}</p>}
-          </div>
+          <div className="flex-1"><p className="font-medium text-sm">@{u.nickname}</p>
+            {u.ban_status > 0 && <p className="text-xs text-red-500">{u.ban_status === 1 ? `封禁至 ${u.ban_until?.split("T")[0]}` : "永久封禁"}</p>}</div>
           {u.role !== 1 && (
             u.ban_status > 0
-              ? <button onClick={() => unbanUser(u.id)} className="text-xs text-orange-500 border border-orange-200 rounded-lg px-3 py-1">解封</button>
-              : <button onClick={() => setBanModal({ show: true, id: u.id, name: u.nickname, type: 1, days: 3 })} className="text-xs text-red-500 border border-red-200 rounded-lg px-3 py-1">封禁</button>
+              ? <button onClick={() => unbanUser(u.nickname)} className="text-xs text-orange-500 border border-orange-200 rounded-lg px-3 py-1">解封</button>
+              : <button onClick={() => setBanModal({ show: true, name: u.nickname, type: 1, days: 3 })} className="text-xs text-red-500 border border-red-200 rounded-lg px-3 py-1">封禁</button>
           )}
         </div>
       ))}
 
-      {tab === "devices" && devices.map((d) => (
+      {tab === "devices" && devices.map(d => (
         <div key={d.id} className="bg-white rounded-2xl p-4 mb-3 shadow-sm flex items-center justify-between">
-          <div>
-            <p className="font-medium">{d.name}</p>
-            <p className="text-xs text-gray-400">{d.description}</p>
-          </div>
+          <div><p className="font-medium">{d.name}</p><p className="text-xs text-gray-400">{d.description}</p></div>
           <button onClick={() => toggleMaintenance(d.id, d.status)} className={`text-xs rounded-lg px-3 py-1 border ${d.status === 1 ? "text-red-500 border-red-200" : "text-green-600 border-green-300"}`}>
             {d.status === 1 ? "标记维护" : "恢复可用"}
           </button>
@@ -179,11 +226,7 @@ export default function AdminPage() {
           ].map(({ key, label }) => (
             <div key={key} className="mb-4">
               <label className="text-xs text-gray-500 block mb-1">{label}</label>
-              <input
-                value={(config as any)[key]}
-                onChange={(e) => setConfig({ ...config, [key]: e.target.value })}
-                className="w-full border rounded-xl px-3 py-2 text-sm"
-              />
+              <input value={(config as any)[key]} onChange={e => setConfig({ ...config, [key]: e.target.value })} className="w-full border rounded-xl px-3 py-2 text-sm" />
             </div>
           ))}
           <button onClick={saveConfig} className="w-full bg-orange-500 text-white rounded-xl py-2.5 text-sm mt-2">保存配置</button>
@@ -192,14 +235,14 @@ export default function AdminPage() {
 
       {banModal.show && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setBanModal({ ...banModal, show: false })}>
-          <div className="bg-white rounded-2xl p-6 w-80" onClick={(e) => e.stopPropagation()}>
-            <h3 className="font-semibold mb-4">封禁用户：{banModal.name}</h3>
+          <div className="bg-white rounded-2xl p-6 w-80" onClick={e => e.stopPropagation()}>
+            <h3 className="font-semibold mb-4">封禁用户：@{banModal.name}</h3>
             <div className="flex gap-3 mb-4">
               <button onClick={() => setBanModal({ ...banModal, type: 1 })} className={`flex-1 py-2 rounded-lg text-sm border ${banModal.type === 1 ? "bg-red-50 text-red-500 border-red-300" : "border-gray-200 text-gray-500"}`}>临时</button>
               <button onClick={() => setBanModal({ ...banModal, type: 2 })} className={`flex-1 py-2 rounded-lg text-sm border ${banModal.type === 2 ? "bg-red-50 text-red-500 border-red-300" : "border-gray-200 text-gray-500"}`}>永久</button>
             </div>
             {banModal.type === 1 && (
-              <input type="number" value={banModal.days} onChange={(e) => setBanModal({ ...banModal, days: Number(e.target.value) || 1 })} className="w-full border rounded-xl px-3 py-2 text-sm mb-4" placeholder="封禁天数" />
+              <input type="number" value={banModal.days} onChange={e => setBanModal({ ...banModal, days: Number(e.target.value) || 1 })} className="w-full border rounded-xl px-3 py-2 text-sm mb-4" placeholder="封禁天数" />
             )}
             <div className="flex gap-3">
               <button onClick={() => setBanModal({ ...banModal, show: false })} className="flex-1 py-2 text-sm border rounded-xl">取消</button>
