@@ -1,0 +1,18 @@
+# systemd service file for kitchen.ladder.pub
+# Place at /etc/systemd/system/kitchen.service
+
+[Unit]
+Description=Kitchen Booking Next.js App
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/kitchen/.next/standalone
+EnvironmentFile=/var/www/kitchen/.env
+ExecStart=/usr/bin/node /var/www/kitchen/.next/standalone/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
