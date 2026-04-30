@@ -2,9 +2,18 @@
 
 import { supabase } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+function dateLabel(date: string) {
+  const d = new Date(`${date}T00:00:00`);
+  const week = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][d.getDay()];
+  return `${date} · ${week}`;
+}
 function displayTime(t: string): string { return t.slice(0, 5); }
+function deviceSortValue(booking: any): string {
+  const sortOrder = booking.kitchen_devices?.sort_order ?? 999;
+  return `${String(sortOrder).padStart(4, "0")}-${booking.deviceName || ""}`;
+}
 
 export default function AdminPage() {
   const [tab, setTab] = useState("bookings");
@@ -27,6 +36,25 @@ export default function AdminPage() {
 
   const router = useRouter();
 
+  const groupedBookings = useMemo(() => {
+    const groups = new Map<string, any[]>();
+    bookings.forEach(b => {
+      const list = groups.get(b.date) || [];
+      list.push(b);
+      groups.set(b.date, list);
+    });
+    return Array.from(groups.entries())
+      .sort(([a], [b]) => b.localeCompare(a))
+      .map(([date, items]) => ({
+        date,
+        items: items.sort((a, b) =>
+          deviceSortValue(a).localeCompare(deviceSortValue(b)) ||
+          a.start_time.localeCompare(b.start_time) ||
+          String(a.wechat_name || "").localeCompare(String(b.wechat_name || ""))
+        ),
+      }));
+  }, [bookings]);
+
   useEffect(() => {
     checkAdmin();
   }, []);
@@ -48,7 +76,7 @@ export default function AdminPage() {
 
   async function loadBookings() {
     const { data } = await supabase
-      .from("kitchen_bookings").select("*, kitchen_devices!inner(name)")
+      .from("kitchen_bookings").select("*, kitchen_devices!inner(name, sort_order)")
       .order("created_at", { ascending: false }).limit(100);
     if (data) setBookings(data.map((b: any) => ({
       ...b, deviceName: b.kitchen_devices?.name,
@@ -196,13 +224,37 @@ export default function AdminPage() {
         ))}
       </div>
 
-      {tab === "bookings" && bookings.map(b => (
-        <div key={b.id} className="bg-white rounded-2xl p-4 mb-3 shadow-sm">
-          <div><p className="font-medium">{b.deviceName}</p>
-          <p className="text-xs text-gray-500">@{b.wechat_name} | {b.date} {displayTime(b.start_time)}-{displayTime(b.end_time)} · {b.statusText}</p></div>
-          {b.status === 1 && <button onClick={() => forceCancel(b.id)} className="mt-2 text-xs text-red-500 border border-red-200 rounded-lg px-3 py-1">强制取消</button>}
-        </div>
-      ))}
+      {tab === "bookings" && (
+        bookings.length === 0
+          ? <div className="text-center text-gray-400 py-20">暂无预约记录</div>
+          : groupedBookings.map(group => (
+            <section key={group.date} className="mb-5">
+              <div className="sticky top-0 z-10 -mx-4 bg-[#f7f4ef]/95 px-4 py-2 backdrop-blur">
+                <h2 className="text-sm font-semibold text-[#5f594f]">{dateLabel(group.date)}</h2>
+              </div>
+              <div className="space-y-3">
+                {group.items.map(b => (
+                  <div key={b.id} className="bg-white rounded-2xl p-4 shadow-sm border border-[#eee7df]">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-medium">{b.deviceName}</p>
+                        <p className="text-xs text-gray-500">@{b.wechat_name || "未填写"} · {displayTime(b.start_time)}-{displayTime(b.end_time)}</p>
+                      </div>
+                      <span className={`shrink-0 px-3 py-1 rounded-full text-xs ${
+                        b.status === 1 ? "bg-[#d8e0e4] text-[#425e6b]" :
+                        b.status === 2 ? "bg-[#e8d1c3] text-[#8a513b]" :
+                        "bg-[#e2e0da] text-[#6b6860]"
+                      }`}>{b.statusText}</span>
+                    </div>
+                    {b.status === 1 && (
+                      <button onClick={() => forceCancel(b.id)} className="mt-3 min-h-10 text-sm text-red-500 border border-red-200 rounded-xl px-4 py-1.5">强制取消</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          ))
+      )}
 
       {tab === "users" && users.map((u, i) => (
         <div key={i} className="bg-white rounded-2xl p-4 mb-3 shadow-sm flex items-center gap-3">
