@@ -7,7 +7,7 @@ set -e
 SERVER="root@47.76.250.17"
 REMOTE_DIR="/var/www/kitchen"
 SSH_KEY="$HOME/Downloads/密钥.pem"
-LOCAL_DIR="$HOME/Desktop/projects/kitchen-web"
+LOCAL_DIR="$HOME/Desktop/Projects/kitchen-web"
 
 echo "🔨 Building..."
 cd "$LOCAL_DIR"

@@ -1,5 +1,6 @@
 'use client';
 
+import { defaultRuleSections, normalizeRuleSections, RuleSection, TextRuleItem } from "@/lib/rules";
 import { supabase } from "@/lib/supabase/client";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -14,6 +15,12 @@ function deviceSortValue(booking: any): string {
   const sortOrder = booking.kitchen_devices?.sort_order ?? 999;
   return `${String(sortOrder).padStart(4, "0")}-${booking.deviceName || ""}`;
 }
+function linesToTips(value: string): string[] {
+  return value.split("\n").map(line => line.trim()).filter(Boolean);
+}
+function tipsToLines(tips: string[]): string {
+  return tips.join("\n");
+}
 
 export default function AdminPage() {
   const [tab, setTab] = useState("bookings");
@@ -24,6 +31,7 @@ export default function AdminPage() {
   const [bookings, setBookings] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [devices, setDevices] = useState<any[]>([]);
+  const [ruleSections, setRuleSections] = useState<RuleSection[]>(defaultRuleSections);
   const [config, setConfig] = useState({
     max_duration: "2",
     max_daily: "2",
@@ -72,6 +80,7 @@ export default function AdminPage() {
     loadUsers();
     loadDevices();
     loadConfig();
+    loadRules();
   }
 
   async function loadBookings() {
@@ -120,6 +129,11 @@ export default function AdminPage() {
       if (Number(c.end_hour) < 24) c.end_hour = "24";
       setConfig({ ...config, ...c });
     }
+  }
+
+  async function loadRules() {
+    const { data } = await supabase.from("kitchen_rule_sections").select("*").order("sort_order");
+    setRuleSections(normalizeRuleSections(data));
   }
 
   async function handleLogin() {
@@ -187,6 +201,28 @@ export default function AdminPage() {
     alert("配置已保存");
   }
 
+  async function saveRules() {
+    const rows = ruleSections.map(section => ({
+      key: section.key,
+      title: section.title,
+      content: section.content,
+      sort_order: section.sort_order,
+      enabled: section.enabled,
+      updated_at: new Date().toISOString(),
+    }));
+    const { error } = await supabase.from("kitchen_rule_sections").upsert(rows, { onConflict: "key" });
+    if (error) {
+      alert(`保存失败：${error.message}`);
+      return;
+    }
+    alert("使用规则已保存");
+    loadRules();
+  }
+
+  function updateRuleSection(key: RuleSection["key"], updater: (section: RuleSection) => RuleSection) {
+    setRuleSections(current => current.map(section => section.key === key ? updater(section) : section));
+  }
+
   if (!authorized) {
     return (
       <div className="flex min-h-screen items-center justify-center p-8 bg-amber-50">
@@ -217,9 +253,9 @@ export default function AdminPage() {
       </div>
 
       <div className="flex border-b mb-4">
-        {["bookings", "users", "devices", "config"].map(t => (
+        {["bookings", "users", "devices", "rules", "config"].map(t => (
           <button key={t} onClick={() => setTab(t)} className={`flex-1 pb-2 text-sm text-center ${tab === t ? "text-orange-500 border-b-2 border-orange-500 font-medium" : "text-gray-500"}`}>
-            {{ bookings: "预约", users: "用户", devices: "设备", config: "配置" }[t]}
+            {{ bookings: "预约", users: "用户", devices: "设备", rules: "规则", config: "配置" }[t]}
           </button>
         ))}
       </div>
@@ -277,6 +313,169 @@ export default function AdminPage() {
           </button>
         </div>
       ))}
+
+      {tab === "rules" && (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-orange-100 bg-orange-50 p-4 text-xs leading-relaxed text-orange-700">
+            这里编辑的是“使用规则”页面内容。链接不会直接显示 URL，用户只会看到你填写的链接文字，比如“查看风炉使用视频”。
+          </div>
+
+          {ruleSections.map(section => (
+            <section key={section.key} className="bg-white rounded-2xl p-4 shadow-sm">
+              <div className="mb-4 flex items-center gap-3">
+                <input
+                  value={section.title}
+                  onChange={e => updateRuleSection(section.key, current => ({ ...current, title: e.target.value }))}
+                  className="min-w-0 flex-1 rounded-xl border px-3 py-2 text-sm font-medium"
+                />
+                <label className="flex shrink-0 items-center gap-1 text-xs text-gray-500">
+                  <input
+                    type="checkbox"
+                    checked={section.enabled}
+                    onChange={e => updateRuleSection(section.key, current => ({ ...current, enabled: e.target.checked }))}
+                  />
+                  显示
+                </label>
+              </div>
+
+              {section.content.type === "devices" && (
+                <div className="space-y-4">
+                  {section.content.items.map((item, index) => (
+                    <div key={`${item.name}-${index}`} className="rounded-2xl border border-gray-100 bg-[#faf8f4] p-3">
+                      <div className="mb-3 grid grid-cols-[56px_1fr] gap-2">
+                        <input
+                          value={item.icon}
+                          onChange={e => updateRuleSection(section.key, current => {
+                            if (current.content.type !== "devices") return current;
+                            const items = current.content.items.map((d, i) => i === index ? { ...d, icon: e.target.value } : d);
+                            return { ...current, content: { ...current.content, items } };
+                          })}
+                          className="rounded-xl border px-3 py-2 text-center text-sm"
+                        />
+                        <input
+                          value={item.name}
+                          onChange={e => updateRuleSection(section.key, current => {
+                            if (current.content.type !== "devices") return current;
+                            const items = current.content.items.map((d, i) => i === index ? { ...d, name: e.target.value } : d);
+                            return { ...current, content: { ...current.content, items } };
+                          })}
+                          className="rounded-xl border px-3 py-2 text-sm"
+                          placeholder="设备名称"
+                        />
+                      </div>
+                      <textarea
+                        value={item.desc}
+                        onChange={e => updateRuleSection(section.key, current => {
+                          if (current.content.type !== "devices") return current;
+                          const items = current.content.items.map((d, i) => i === index ? { ...d, desc: e.target.value } : d);
+                          return { ...current, content: { ...current.content, items } };
+                        })}
+                        className="mb-3 min-h-20 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="设备说明"
+                      />
+                      <label className="mb-1 block text-xs text-gray-500">使用小贴士（一行一条）</label>
+                      <textarea
+                        value={tipsToLines(item.tips)}
+                        onChange={e => updateRuleSection(section.key, current => {
+                          if (current.content.type !== "devices") return current;
+                          const items = current.content.items.map((d, i) => i === index ? { ...d, tips: linesToTips(e.target.value) } : d);
+                          return { ...current, content: { ...current.content, items } };
+                        })}
+                        className="mb-3 min-h-24 w-full rounded-xl border px-3 py-2 text-sm"
+                      />
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <input
+                          value={item.linkText || ""}
+                          onChange={e => updateRuleSection(section.key, current => {
+                            if (current.content.type !== "devices") return current;
+                            const items = current.content.items.map((d, i) => i === index ? { ...d, linkText: e.target.value } : d);
+                            return { ...current, content: { ...current.content, items } };
+                          })}
+                          className="rounded-xl border px-3 py-2 text-sm"
+                          placeholder="链接文字，如：查看使用视频"
+                        />
+                        <input
+                          value={item.linkUrl || ""}
+                          onChange={e => updateRuleSection(section.key, current => {
+                            if (current.content.type !== "devices") return current;
+                            const items = current.content.items.map((d, i) => i === index ? { ...d, linkUrl: e.target.value } : d);
+                            return { ...current, content: { ...current.content, items } };
+                          })}
+                          className="rounded-xl border px-3 py-2 text-sm"
+                          placeholder="视频链接 URL"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {section.content.type === "list" && (
+                <div className="space-y-3">
+                  {section.content.items.map((item, index) => (
+                    <div key={index} className="rounded-2xl border border-gray-100 bg-[#faf8f4] p-3">
+                      <textarea
+                        value={item.text}
+                        onChange={e => updateRuleSection(section.key, current => {
+                          if (current.content.type !== "list") return current;
+                          const items = current.content.items.map((rule, i) => i === index ? { ...rule, text: e.target.value } : rule);
+                          return { ...current, content: { ...current.content, items } };
+                        })}
+                        className="mb-2 min-h-16 w-full rounded-xl border px-3 py-2 text-sm"
+                        placeholder="规则文字"
+                      />
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <input
+                          value={item.linkText || ""}
+                          onChange={e => updateRuleSection(section.key, current => {
+                            if (current.content.type !== "list") return current;
+                            const items = current.content.items.map((rule, i) => i === index ? { ...rule, linkText: e.target.value } : rule);
+                            return { ...current, content: { ...current.content, items } };
+                          })}
+                          className="rounded-xl border px-3 py-2 text-sm"
+                          placeholder="链接文字，可留空"
+                        />
+                        <input
+                          value={item.linkUrl || ""}
+                          onChange={e => updateRuleSection(section.key, current => {
+                            if (current.content.type !== "list") return current;
+                            const items = current.content.items.map((rule, i) => i === index ? { ...rule, linkUrl: e.target.value } : rule);
+                            return { ...current, content: { ...current.content, items } };
+                          })}
+                          className="rounded-xl border px-3 py-2 text-sm"
+                          placeholder="链接 URL，可留空"
+                        />
+                      </div>
+                      <button
+                        onClick={() => updateRuleSection(section.key, current => {
+                          if (current.content.type !== "list") return current;
+                          const items = current.content.items.filter((_, i) => i !== index);
+                          return { ...current, content: { ...current.content, items } };
+                        })}
+                        className="mt-2 text-xs text-red-500"
+                      >
+                        删除这条
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => updateRuleSection(section.key, current => {
+                      if (current.content.type !== "list") return current;
+                      const nextItem: TextRuleItem = { text: "", linkText: "", linkUrl: "" };
+                      return { ...current, content: { ...current.content, items: [...current.content.items, nextItem] } };
+                    })}
+                    className="w-full rounded-xl border border-dashed border-orange-200 py-2 text-sm text-orange-600"
+                  >
+                    添加一条规则
+                  </button>
+                </div>
+              )}
+            </section>
+          ))}
+
+          <button onClick={saveRules} className="w-full bg-[#c86b3c] text-white rounded-xl py-2.5 text-sm">保存使用规则</button>
+        </div>
+      )}
 
       {tab === "config" && (
         <div className="bg-white rounded-2xl p-4 shadow-sm">
